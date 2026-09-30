@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SeatSure — Bus Seat Booking</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">SeatSure</div>
+    <nav>
+      <button class="tab active" data-view="book">Book seats</button>
+      <button class="tab" data-view="manage">My booking</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- BOOK -->
+    <section id="view-book" class="view">
+      <form id="search" class="card search">
+        <label>From<select name="from" required></select></label>
+        <button type="button" id="swap" class="swap" title="Swap" aria-label="Swap origin and destination">⇄</button>
+        <label>To<select name="to" required></select></label>
+        <fieldset class="dates"><legend>Travel date</legend><div id="date-chips"></div></fieldset>
+        <button type="submit" class="primary">Find buses</button>
+      </form>
+      <p class="hint" id="window-hint"></p>
+
+      <div id="results"></div>
+
+      <div id="seat-panel" class="card hidden">
+        <div class="panel-head">
+          <div><h2 id="seat-title"></h2><p class="muted" id="seat-sub"></p></div>
+          <button class="link" id="close-seats">Close</button>
+        </div>
+        <div class="seat-wrap">
+          <div>
+            <div class="legend">
+              <span><i class="seat free"></i>Available</span>
+              <span><i class="seat selected"></i>Selected</span>
+              <span><i class="seat booked"></i>Booked</span>
+            </div>
+            <div class="bus"><div class="driver">Driver</div><div id="seat-grid"></div></div>
+          </div>
+          <form id="passenger" class="passenger">
+            <h3>Passenger details</h3>
+            <p class="muted" id="selected-summary">No seats selected</p>
+            <label>Full name<input name="name" autocomplete="name" minlength="2" maxlength="60" required /></label>
+            <label>Phone number<input name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="e.g. 9876543210" required /></label>
+            <p class="error" id="book-error" role="alert"></p>
+            <button type="submit" class="primary" id="book-btn" disabled>Confirm booking</button>
+            <p class="muted small">No payment needed — seats are reserved instantly.</p>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- MANAGE -->
+    <section id="view-manage" class="view hidden">
+      <form id="lookup" class="card lookup">
+        <h2>Find your booking</h2>
+        <label>Booking reference<input name="reference" placeholder="BSXXXXXXXX" required /></label>
+        <label>Phone number used to book<input name="phone" type="tel" required /></label>
+        <p class="error" id="lookup-error" role="alert"></p>
+        <button type="submit" class="primary">Look up</button>
+      </form>
+      <div id="booking-detail"></div>
+    </section>
+  </main>
+
+  <dialog id="confirm-dialog">
+    <div id="confirm-body"></div>
+    <form method="dialog"><button class="primary">Done</button></form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "bus-seat-booking",
+  "version": "1.0.0",
+  "description": "Bus seat reservation — book seats up to 3 days ahead, no payment",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "express": "^4.22.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
