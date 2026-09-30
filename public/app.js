@@ -19,11 +19,20 @@
 
   const state = { config: null, date: null, trip: null, booked: new Set(), selected: new Set() };
 
+  function syncViewFromHash() {
+    const target = location.hash.replace('#', '') || 'book';
+    const allowed = ['book', 'manage', 'admin'];
+    const view = allowed.includes(target) ? target : 'book';
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view));
+    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${view}`));
+  }
+
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t));
-    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${t.dataset.view}`));
+    location.hash = `#${t.dataset.view}`;
+    syncViewFromHash();
   }));
+  window.addEventListener('hashchange', syncViewFromHash);
 
   // ---------- init ----------
   async function init() {
@@ -48,6 +57,9 @@
     });
     $('#window-hint').textContent =
       `Book up to ${config.windowDays} days ahead · up to ${config.maxSeatsPerBooking} seats per booking · booking closes ${config.cutoffMinutes} min before departure.`;
+
+    await Promise.all([loadRoutesForBusForm(), loadBuses()]);
+    syncViewFromHash();
   }
 
   $('#swap').addEventListener('click', () => {
@@ -100,10 +112,20 @@
     state.selected = new Set();
     $('#seat-title').textContent = `${data.trip.origin} → ${data.trip.destination}`;
     $('#seat-sub').textContent = `${data.trip.bus.name} · ${fmtDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · departs ${data.trip.departureTime}`;
-    $('#seat-grid').innerHTML = data.layout.map((row) => `<div class="row">
-      ${row.map((s, i) => `${i === 2 ? '<span></span>' : ''}<button type="button" class="seat ${state.booked.has(s) ? 'booked' : 'free'}"
-        data-seat="${s}" ${state.booked.has(s) ? 'disabled aria-label="Seat ' + s + ' booked"' : 'aria-pressed="false"'}>${s}</button>`).join('')}
-    </div>`).join('');
+    const columns = data.trip.bus.seatColumns || 4;
+    const leftColumns = Math.ceil(columns / 2);
+    const rightColumns = Math.floor(columns / 2);
+    const template = columns > 1
+      ? `repeat(${leftColumns}, 40px) 22px repeat(${rightColumns}, 40px)`
+      : 'repeat(1, 40px)';
+    $('#seat-grid').innerHTML = data.layout.map((row) => {
+      const cells = row.map((s, i) => {
+        const aisle = columns > 1 && i === leftColumns ? '<span class="seat-aisle" aria-hidden="true"></span>' : '';
+        return `${aisle}<button type="button" class="seat ${state.booked.has(s) ? 'booked' : 'free'}"
+          data-seat="${s}" ${state.booked.has(s) ? 'disabled aria-label="Seat ' + s + ' booked"' : 'aria-pressed="false"'}>${s}</button>`;
+      }).join('');
+      return `<div class="row" style="grid-template-columns: ${template};">${cells}</div>`;
+    }).join('');
     $('#book-error').textContent = '';
     updateSummary();
     $('#seat-panel').classList.remove('hidden');
@@ -152,6 +174,184 @@
       $('#book-error').textContent = err.message;
       if (err.data?.code === 'SEAT_TAKEN') await openSeats(state.trip.scheduleId, state.trip.date);
       btn.disabled = state.selected.size === 0;
+    }
+  });
+
+  let busRouteOptions = [];
+
+  function createRouteRow(routeId = '', departureTime = '08:00') {
+    const row = document.createElement('div');
+    row.className = 'route-row';
+    row.innerHTML = `
+      <div class="route-select-wrap">
+        <select class="route-select" aria-label="Route">
+          <option value="">Select route</option>
+          ${busRouteOptions.length ? busRouteOptions.map((r) => `<option value="${r.id}" ${String(r.id) === String(routeId) ? 'selected' : ''}>${esc(r.origin)} → ${esc(r.destination)}</option>`).join('') : '<option value="">No routes available</option>'}
+        </select>
+      </div>
+      <div class="route-time-wrap">
+        <input class="route-time" type="time" value="${escapeAttribute(departureTime)}" aria-label="Departure time" />
+      </div>
+      <button type="button" class="remove-route-row" aria-label="Remove route">×</button>
+    `;
+
+    row.querySelector('.remove-route-row').addEventListener('click', () => {
+      const rows = document.querySelectorAll('#route-rows .route-row');
+      if (rows.length > 1) row.remove();
+    });
+
+    return row;
+  }
+
+  function escapeAttribute(value) {
+    return String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function resetRouteRows() {
+    const container = document.getElementById('route-rows');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(createRouteRow());
+  }
+
+  async function loadRoutesForBusForm() {
+    const routes = await api('/api/routes');
+    busRouteOptions = routes;
+    const container = document.getElementById('route-rows');
+    if (!container || !container.children.length) {
+      resetRouteRows();
+      return;
+    }
+
+    const rows = [...container.querySelectorAll('.route-row')];
+    rows.forEach((row) => {
+      const select = row.querySelector('.route-select');
+      const currentValue = select?.value || '';
+      select.innerHTML = routes.length ? `<option value="">Select route</option>${routes.map((r) => `<option value="${r.id}" ${String(r.id) === String(currentValue) ? 'selected' : ''}>${esc(r.origin)} → ${esc(r.destination)}</option>`).join('')}` : '<option value="">No routes available</option>';
+    });
+  }
+
+  function renderBusRouteCard(route) {
+    const times = route.departureTimes?.length ? route.departureTimes.map((t) => `<span class="time-pill">${esc(t)}</span>`).join('') : '<span class="time-pill muted-pill">No time</span>';
+    return `
+      <div class="route-card">
+        <div class="route-card-head">
+          <span class="route-name">${esc(route.origin)} → ${esc(route.destination)}</span>
+        </div>
+        <div class="time-pills">${times}</div>
+      </div>`;
+  }
+
+  async function loadBuses() {
+    const buses = await api('/api/buses');
+    const list = $('#bus-list');
+    const term = ($('#bus-search')?.value || '').trim().toLowerCase();
+    const visibleBuses = buses.filter((b) => !term || `${b.name} ${b.operator} ${b.busType}`.toLowerCase().includes(term));
+
+    list.innerHTML = visibleBuses.length ? visibleBuses.map((b) => {
+      const routeRows = (b.routes?.length ? b.routes : [{ origin: null, destination: null, departureTimes: [] }]).map((route) => {
+        const routeName = route.origin && route.destination ? `${esc(route.origin)} → ${esc(route.destination)}` : 'No route assigned';
+        const times = route.departureTimes?.length ? route.departureTimes.map((t) => `<span class="time-pill">${esc(t)}</span>`).join('') : '<span class="time-pill muted-pill">No time</span>';
+        const firstTime = route.departureTimes?.[0] || '—';
+        const seatSummary = `<span>${b.seatRows * b.seatColumns} seats</span> · <span>${b.seatRows} × ${b.seatColumns}</span>`;
+
+        return `
+          <div class="route-block">
+            <div class="route-line"><span class="route-dot">◉</span> ${routeName}</div>
+            <div class="route-summary-line">${times} <span class="route-summary-meta">${firstTime} · ${seatSummary}</span></div>
+          </div>`;
+      }).join('');
+
+      return `
+        <li class="bus-item">
+          <div class="bus-row">
+            <div class="bus-main">
+              <h3>${esc(b.name)}</h3>
+              <p class="bus-meta">${esc(b.operator)} · ${esc(b.busType)}</p>
+              ${routeRows}
+            </div>
+            <div class="bus-side">
+              <span class="status-pill">Active</span>
+              <button type="button" class="menu-button" aria-label="More options">⋮</button>
+            </div>
+          </div>
+          <div class="bus-actions">
+            <button type="button" class="text-action">View seats</button>
+            <button type="button" class="text-action">Edit</button>
+          </div>
+        </li>`;
+    }).join('') : '<li class="empty-state"><span class="muted">No buses yet.</span></li>';
+  }
+
+  const busSearch = $('#bus-search');
+  if (busSearch) busSearch.addEventListener('input', loadBuses);
+
+  const busFormPanel = $('#bus-form-panel');
+  const toggleBusForm = $('#toggle-bus-form');
+  const cancelBusForm = $('#cancel-bus-form');
+
+  function setBusFormVisible(visible) {
+    if (!busFormPanel) return;
+    busFormPanel.classList.toggle('hidden', !visible);
+    if (toggleBusForm) toggleBusForm.textContent = visible ? '− Close' : '+ Add bus';
+  }
+
+  if (toggleBusForm) toggleBusForm.addEventListener('click', () => setBusFormVisible(busFormPanel.classList.contains('hidden')));
+  if (cancelBusForm) cancelBusForm.addEventListener('click', () => setBusFormVisible(false));
+
+  document.getElementById('add-route-row')?.addEventListener('click', () => {
+    const container = document.getElementById('route-rows');
+    if (container) container.appendChild(createRouteRow());
+  });
+
+  $('#bus-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    $('#bus-error').textContent = '';
+    $('#bus-success').textContent = '';
+
+    try {
+      const routeRows = [...f.querySelectorAll('#route-rows .route-row')];
+      const routeIds = [];
+      const departureTimes = [];
+      routeRows.forEach((row) => {
+        const select = row.querySelector('.route-select');
+        const timeInput = row.querySelector('.route-time');
+        const routeId = Number(select?.value || 0);
+        if (!routeId) return;
+        routeIds.push(routeId);
+        departureTimes.push(timeInput?.value || '08:00');
+      });
+
+      if (!routeIds.length) {
+        throw new Error('Add at least one route for this bus.');
+      }
+
+      const body = {
+        name: f.name.value,
+        operator: f.operator.value,
+        busType: f.busType.value,
+        seatRows: Number(f.seatRows.value),
+        seatColumns: Number(f.seatColumns.value),
+        seatLayout: f.seatLayout.value,
+        routeIds,
+        departureTimes,
+      };
+      const bus = await api('/api/buses', { method: 'POST', body });
+      $('#bus-success').textContent = `Saved ${bus.name} (${bus.seatRows}×${bus.seatColumns}).`;
+      f.reset();
+      f.seatRows.value = 10;
+      f.seatColumns.value = 4;
+      f.seatLayout.value = 'A,B,C,D';
+      resetRouteRows();
+      setBusFormVisible(false);
+      await loadBuses();
+    } catch (err) {
+      $('#bus-error').textContent = err.message;
+    } finally {
+      btn.disabled = false;
     }
   });
 

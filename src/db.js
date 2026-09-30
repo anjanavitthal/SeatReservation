@@ -11,11 +11,13 @@ CREATE TABLE IF NOT EXISTS routes (
 );
 
 CREATE TABLE IF NOT EXISTS buses (
-  id        INTEGER PRIMARY KEY,
-  name      TEXT NOT NULL,
-  operator  TEXT NOT NULL,
-  bus_type  TEXT NOT NULL,
-  seat_rows INTEGER NOT NULL CHECK (seat_rows BETWEEN 1 AND 20)
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL,
+  operator    TEXT NOT NULL,
+  bus_type    TEXT NOT NULL,
+  seat_rows   INTEGER NOT NULL CHECK (seat_rows BETWEEN 1 AND 20),
+  seat_columns INTEGER NOT NULL DEFAULT 4 CHECK (seat_columns BETWEEN 1 AND 12),
+  seat_layout TEXT NOT NULL DEFAULT 'A,B,C,D'
 );
 
 -- A schedule is a bus running a route every day at a fixed time.
@@ -53,6 +55,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_active_seat
   ON booking_seats (schedule_id, travel_date, seat_no) WHERE active = 1;
 `;
 
+function ensureBusSeatColumns(db) {
+  const columns = db.prepare("SELECT name FROM pragma_table_info('buses')").all().map((c) => c.name);
+  if (!columns.includes('seat_columns')) {
+    db.exec("ALTER TABLE buses ADD COLUMN seat_columns INTEGER NOT NULL DEFAULT 4 CHECK (seat_columns BETWEEN 1 AND 12)");
+  }
+  if (!columns.includes('seat_layout')) {
+    db.exec("ALTER TABLE buses ADD COLUMN seat_layout TEXT NOT NULL DEFAULT 'A,B,C,D'");
+  }
+  db.prepare("UPDATE buses SET seat_columns = COALESCE(seat_columns, 4), seat_layout = COALESCE(seat_layout, 'A,B,C,D') WHERE seat_columns IS NULL OR seat_layout IS NULL").run();
+}
+
 function openDb(file = process.env.DB_FILE || 'data/bus.db') {
   if (file !== ':memory:') {
     require('fs').mkdirSync(require('path').dirname(file), { recursive: true });
@@ -61,6 +74,7 @@ function openDb(file = process.env.DB_FILE || 'data/bus.db') {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  ensureBusSeatColumns(db);
   return db;
 }
 
@@ -73,19 +87,20 @@ function seed(db) {
     ['Hyderabad', 'Bengaluru', 600], ['Bengaluru', 'Hyderabad', 600],
     ['Mumbai', 'Goa', 660], ['Goa', 'Mumbai', 660],
     ['Delhi', 'Jaipur', 330], ['Jaipur', 'Delhi', 330],
+    ['Thandla', 'Indore', 240], ['Indore', 'Thandla', 240]
   ];
   const buses = [
-    ['Shivneri Express', 'MSRTC', 'AC Seater', 10],
-    ['Deccan Queen', 'Deccan Travels', 'Non-AC Seater', 11],
-    ['Green Line', 'GreenLine Travels', 'AC Seater', 10],
-    ['Orange Cruiser', 'Orange Tours', 'Volvo AC Seater', 12],
-    ['Royal Rider', 'Royal Travels', 'AC Seater', 9],
+    ['Shivneri Express', 'MSRTC', 'AC Seater', 10, 4, 'A,B,C,D'],
+    ['Deccan Queen', 'Deccan Travels', 'Non-AC Seater', 11, 4, 'A,B,C,D'],
+    ['Green Line', 'GreenLine Travels', 'AC Seater', 10, 4, 'A,B,C,D'],
+    ['Orange Cruiser', 'Orange Tours', 'Volvo AC Seater', 12, 4, 'A,B,C,D'],
+    ['Royal Rider', 'Royal Travels', 'AC Seater', 9, 3, 'A,B,C'],
   ];
   const times = ['06:00', '09:30', '14:00', '18:45', '22:30'];
 
   const tx = db.transaction(() => {
     const insR = db.prepare('INSERT INTO routes (origin, destination, duration_minutes) VALUES (?,?,?)');
-    const insB = db.prepare('INSERT INTO buses (name, operator, bus_type, seat_rows) VALUES (?,?,?,?)');
+    const insB = db.prepare('INSERT INTO buses (name, operator, bus_type, seat_rows, seat_columns, seat_layout) VALUES (?,?,?,?,?,?)');
     const insS = db.prepare('INSERT INTO schedules (route_id, bus_id, departure_time) VALUES (?,?,?)');
     const routeIds = routes.map((r) => insR.run(...r).lastInsertRowid);
     const busIds = buses.map((b) => insB.run(...b).lastInsertRowid);

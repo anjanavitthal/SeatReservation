@@ -12,6 +12,7 @@
     <nav>
       <button class="tab active" data-view="book">Book seats</button>
       <button class="tab" data-view="manage">My booking</button>
+      <button class="tab" data-view="admin">Add bus</button>
     </nav>
   </header>
 
@@ -66,6 +67,103 @@
         <button type="submit" class="primary">Look up</button>
       </form>
       <div id="booking-detail"></div>
+    </section>
+
+    <!-- ADMIN -->
+    <section id="view-admin" class="view hidden">
+      <div class="admin-shell">
+        <header class="admin-header">
+          <div class="admin-brand">
+            <span class="admin-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15V9a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v6m-2 0a2 2 0 1 1-4 0m-6 0a2 2 0 1 1-4 0M7 9h10M8 6h8l1-2H7l1 2ZM7 15h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <div>
+              <h1>Bus Management</h1>
+              <p>Manage buses, seat layouts and routes</p>
+            </div>
+          </div>
+          <span class="admin-badge">Admin</span>
+        </header>
+
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 15V9a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v6m-2 0a2 2 0 1 1-4 0m-6 0a2 2 0 1 1-4 0M7 9h10M8 6h8l1-2H7l1 2ZM7 15h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="stat-value">24</div>
+            <div class="stat-label">Total buses</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 18.5V9.5l7-5 9 5v9M9 14.5l6-6m0 0h-4.5m4.5 0v4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="stat-value">18</div>
+            <div class="stat-label">Active routes</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 4.75h9.5A2.75 2.75 0 0 1 19.25 7.5v9.75A2.75 2.75 0 0 1 16.5 20H7.5A2.75 2.75 0 0 1 4.75 17.25V7.5A2.75 2.75 0 0 1 7.5 4.75Zm0 4.5h9.5M8 16h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="stat-value">864</div>
+            <div class="stat-label">Total seats</div>
+          </div>
+        </div>
+
+        <div class="panel-header">
+          <h2>Buses</h2>
+          <button type="button" class="primary add-bus-button" id="toggle-bus-form">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span>Add bus</span>
+          </button>
+        </div>
+
+        <div id="bus-form-panel" class="admin-form-panel hidden">
+          <form id="bus-form" class="card admin-form">
+            <div class="form-grid">
+              <label>Name<input name="name" placeholder="e.g. City Cruiser" required /></label>
+              <label>Operator<input name="operator" placeholder="e.g. Metro Transit" required /></label>
+              <label>Bus type<input name="busType" placeholder="e.g. Sleeper / Volvo AC" required /></label>
+            </div>
+
+            <div class="route-list-header">
+              <span>Routes</span>
+              <button type="button" class="small-button" id="add-route-row">+ New route</button>
+            </div>
+            <div id="route-rows" class="route-rows"></div>
+
+            <div class="inline-fields">
+              <label>Seat rows<input name="seatRows" type="number" min="1" max="20" value="10" required /></label>
+              <label>Seat columns<input name="seatColumns" type="number" min="1" max="12" value="4" required /></label>
+            </div>
+            <label>Seat layout<input name="seatLayout" placeholder="A,B,C,D" value="A,B,C,D" /></label>
+            <p class="muted small">Example: A,B,C or A,B,C,D</p>
+            <div class="form-actions">
+              <p class="error" id="bus-error" role="alert"></p>
+              <p class="success" id="bus-success" role="status"></p>
+              <div class="action-row">
+                <button type="button" class="muted-button" id="cancel-bus-form">Cancel</button>
+                <button type="submit" class="primary">Save bus</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div class="bus-toolbar">
+          <div class="search-box">
+            <span class="search-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </span>
+            <input id="bus-search" type="search" placeholder="Search buses..." aria-label="Search buses" />
+          </div>
+          <button type="button" class="icon-button" aria-label="Filter buses">
+            <svg viewBox="0 0 24 24"><path d="M5 8h14M8 12h8M11 16h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+
+        <div class="admin-list-wrap">
+          <ul id="bus-list" class="bus-list"></ul>
+        </div>
+      </div>
     </section>
   </main>
 

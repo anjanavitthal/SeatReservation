@@ -73,6 +73,68 @@ test('validation', async (t) => {
   assert.equal(await code({ scheduleId: 9999 }), 'TRIP_NOT_FOUND');
 });
 
+test('admin can add a bus with custom seat layout', async (t) => {
+  const { server, call, db } = await setup(); t.after(() => server.close());
+  const route = db.prepare('SELECT id FROM routes WHERE origin = ? AND destination = ?').get('Mumbai', 'Pune');
+  const created = await call('/api/buses', {
+    name: 'City Cruiser',
+    operator: 'Metro Transit',
+    busType: 'Sleeper',
+    seatRows: 3,
+    seatColumns: 2,
+    seatLayout: 'A,B',
+    routeId: route.id,
+  });
+
+  assert.equal(created.status, 201);
+  assert.equal(created.body.name, 'City Cruiser');
+  assert.equal(created.body.seatRows, 3);
+  assert.deepEqual(created.body.seatLayout, ['A', 'B']);
+  assert.equal(created.body.totalSeats, 6);
+  assert.equal((await call('/api/buses')).body.some((b) => b.name === 'City Cruiser'), true);
+  assert.ok((await call('/api/buses')).body.find((b) => b.name === 'City Cruiser').routes.some((r) => r.origin === 'Mumbai' && r.destination === 'Pune'));
+});
+
+test('admin can add a bus with multiple routes', async (t) => {
+  const { server, call, db } = await setup(); t.after(() => server.close());
+  const routeA = db.prepare('SELECT id FROM routes WHERE origin = ? AND destination = ?').get('Mumbai', 'Pune');
+  const routeB = db.prepare('SELECT id FROM routes WHERE origin = ? AND destination = ?').get('Pune', 'Mumbai');
+  const created = await call('/api/buses', {
+    name: 'Multi Route Bus',
+    operator: 'City Fleet',
+    busType: 'AC Sleeper',
+    seatRows: 4,
+    seatColumns: 2,
+    seatLayout: 'A,B',
+    routeIds: [routeA.id, routeB.id],
+    departureTimes: ['08:00', '18:30'],
+  });
+
+  assert.equal(created.status, 201);
+  const saved = (await call('/api/buses')).body.find((b) => b.name === 'Multi Route Bus');
+  assert.ok(saved);
+  assert.equal(saved.routes.length, 2);
+  assert.deepEqual(saved.routes.map((r) => `${r.origin} → ${r.destination}`).sort(), ['Mumbai → Pune', 'Pune → Mumbai'].sort());
+});
+
+test('admin bus list includes route information', async (t) => {
+  const { server, call, db } = await setup(); t.after(() => server.close());
+  const bus = db.prepare('SELECT id, name FROM buses ORDER BY id LIMIT 1').get();
+  const busList = (await call('/api/buses')).body;
+  const found = busList.find((b) => b.id === bus.id);
+  assert.ok(found);
+  assert.ok(Array.isArray(found.routes));
+  assert.ok(found.routes.length > 0);
+  assert.ok(found.routes.some((r) => r.origin && r.destination));
+});
+
+test('bus routes include departure times for UI rendering', async (t) => {
+  const { server, call, db } = await setup(); t.after(() => server.close());
+  const bus = db.prepare('SELECT id, name FROM buses ORDER BY id LIMIT 1').get();
+  const found = (await call('/api/buses')).body.find((b) => b.id === bus.id);
+  assert.ok(found.routes.some((r) => Array.isArray(r.departureTimes) && r.departureTimes.length > 0));
+});
+
 test('booking closes 15 minutes before departure', async (t) => {
   const { server, call, trip } = await setup(); t.after(() => server.close());
   const [h, m] = trip.departure_time.split(':').map(Number);
@@ -84,4 +146,29 @@ test('booking closes 15 minutes before departure', async (t) => {
   assert.equal(r.body.error.code, 'BOOKING_CLOSED');
   const list = await call('/api/trips?from=Mumbai&to=Pune&date=2026-10-01');
   assert.equal(list.body.find((x) => x.scheduleId === trip.id).bookingOpen, false);
+});
+
+test('bus seat configuration is per-bus and enforced', async (t) => {
+  const db = openDb(':memory:');
+  seed(db);
+  const routeId = db.prepare('INSERT INTO routes (origin, destination, duration_minutes) VALUES (?, ?, ?)')
+    .run('Nashik', 'Nagpur', 420).lastInsertRowid;
+  const busId = db.prepare(`INSERT INTO buses (name, operator, bus_type, seat_rows, seat_columns, seat_layout)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run('Nashik Flex', 'Nashik Lines', 'Sleeper', 2, 3, 'A,B,C').lastInsertRowid;
+  const scheduleId = db.prepare('INSERT INTO schedules (route_id, bus_id, departure_time) VALUES (?, ?, ?)')
+    .run(routeId, busId, '11:15').lastInsertRowid;
+  const server = createApp({ db, now: () => new Date('2026-10-01T02:30:00Z') }).listen(0);
+  await new Promise((r) => server.once('listening', r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (path, body) => {
+    const res = await fetch(base + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    return { status: res.status, body: await res.json() };
+  };
+
+  const seats = await call(`/api/trips/${scheduleId}/2026-10-02/seats`);
+  assert.deepEqual(seats.body.layout, [['1A', '1B', '1C'], ['2A', '2B', '2C']]);
+  assert.equal((await call('/api/bookings', { scheduleId, date: '2026-10-02', seats: ['2C'], name: 'Seat Config', phone: '9090909090' })).status, 201);
+  assert.equal((await call('/api/bookings', { scheduleId, date: '2026-10-02', seats: ['2D'], name: 'Bad Seat', phone: '9090909091' })).body.error.code, 'INVALID_SEAT');
 });

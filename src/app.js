@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { localParts, addDays, addMinutes, isIsoDate } = require('./time');
-const { seatLayout, isValidSeat } = require('./seats');
+const { normalizeSeatConfig, seatLayout, isValidSeat } = require('./seats');
 
 const DEFAULTS = {
   timeZone: process.env.TZ_NAME || 'Asia/Kolkata',
@@ -62,15 +62,27 @@ function createApp({ db, now = () => new Date(), config = {} } = {}) {
 
   const q = {
     cities: db.prepare('SELECT DISTINCT origin AS city FROM routes UNION SELECT destination FROM routes ORDER BY 1'),
+    routes: db.prepare('SELECT id, origin, destination, duration_minutes FROM routes ORDER BY origin, destination'),
+    buses: db.prepare('SELECT id, name, operator, bus_type, seat_rows, seat_columns, seat_layout FROM buses ORDER BY name'),
+    busRouteTimes: db.prepare(`
+      SELECT s.bus_id, r.origin, r.destination, s.departure_time
+      FROM schedules s
+      JOIN routes r ON r.id = s.route_id
+      WHERE s.active = 1
+      ORDER BY s.bus_id, r.origin, r.destination, s.departure_time`),
+    busById: db.prepare('SELECT id, name, operator, bus_type, seat_rows, seat_columns, seat_layout FROM buses WHERE id = ?'),
+    insertBus: db.prepare(`INSERT INTO buses (name, operator, bus_type, seat_rows, seat_columns, seat_layout)
+                          VALUES (?,?,?,?,?,?)`),
+    insertSchedule: db.prepare('INSERT INTO schedules (route_id, bus_id, departure_time) VALUES (?,?,?)'),
     trips: db.prepare(`
       SELECT s.id, s.departure_time, r.origin, r.destination, r.duration_minutes,
-             b.name AS bus_name, b.operator, b.bus_type, b.seat_rows
+             b.name AS bus_name, b.operator, b.bus_type, b.seat_rows, b.seat_columns, b.seat_layout
       FROM schedules s JOIN routes r ON r.id = s.route_id JOIN buses b ON b.id = s.bus_id
       WHERE s.active = 1 AND r.origin = ? COLLATE NOCASE AND r.destination = ? COLLATE NOCASE
       ORDER BY s.departure_time`),
     trip: db.prepare(`
       SELECT s.id, s.departure_time, r.origin, r.destination, r.duration_minutes,
-             b.name AS bus_name, b.operator, b.bus_type, b.seat_rows
+             b.name AS bus_name, b.operator, b.bus_type, b.seat_rows, b.seat_columns, b.seat_layout
       FROM schedules s JOIN routes r ON r.id = s.route_id JOIN buses b ON b.id = s.bus_id
       WHERE s.active = 1 AND s.id = ?`),
     bookedSeats: db.prepare('SELECT seat_no FROM booking_seats WHERE schedule_id = ? AND travel_date = ? AND active = 1'),
@@ -87,16 +99,23 @@ function createApp({ db, now = () => new Date(), config = {} } = {}) {
 
   function tripView(t, date) {
     const arr = addMinutes(t.departure_time, t.duration_minutes);
-    const total = t.seat_rows * 4;
+    const seatCfg = normalizeSeatConfig(t);
     return {
       scheduleId: t.id, date,
       origin: t.origin, destination: t.destination,
       departureTime: t.departure_time,
       arrivalTime: arr.time, arrivalDayOffset: arr.dayOffset,
       durationMinutes: t.duration_minutes,
-      bus: { name: t.bus_name, operator: t.operator, type: t.bus_type },
-      totalSeats: total,
-      availableSeats: total - q.bookedCount.get(t.id, date).c,
+      bus: {
+        name: t.bus_name,
+        operator: t.operator,
+        type: t.bus_type,
+        seatRows: seatCfg.rows,
+        seatColumns: seatCfg.columns,
+        seatLayout: seatCfg.columnOrder,
+      },
+      totalSeats: seatCfg.totalSeats,
+      availableSeats: seatCfg.totalSeats - q.bookedCount.get(t.id, date).c,
       bookingOpen: !isClosed(date, t.departure_time),
     };
   }
@@ -130,6 +149,100 @@ function createApp({ db, now = () => new Date(), config = {} } = {}) {
 
   app.get('/api/cities', wrap((req, res) => res.json(q.cities.all().map((r) => r.city))));
 
+  app.get('/api/routes', wrap((req, res) => {
+    res.json(q.routes.all().map((r) => ({
+      id: r.id,
+      origin: r.origin,
+      destination: r.destination,
+      durationMinutes: r.duration_minutes,
+      label: `${r.origin} → ${r.destination}`,
+    })));
+  }));
+
+  app.get('/api/buses', wrap((req, res) => {
+    const routesByBus = new Map();
+    for (const row of q.busRouteTimes.all()) {
+      if (!routesByBus.has(row.bus_id)) routesByBus.set(row.bus_id, new Map());
+      const byRoute = routesByBus.get(row.bus_id);
+      const key = `${row.origin}::${row.destination}`;
+      if (!byRoute.has(key)) byRoute.set(key, { origin: row.origin, destination: row.destination, departureTimes: [] });
+      byRoute.get(key).departureTimes.push(row.departure_time);
+    }
+
+    res.json(q.buses.all().map((b) => {
+      const routes = Array.from((routesByBus.get(b.id) || new Map()).values()).map((r) => ({
+        origin: r.origin,
+        destination: r.destination,
+        departureTimes: [...new Set(r.departureTimes)].sort(),
+      }));
+
+      return {
+        id: b.id,
+        name: b.name,
+        operator: b.operator,
+        busType: b.bus_type,
+        seatRows: b.seat_rows,
+        seatColumns: b.seat_columns,
+        seatLayout: String(b.seat_layout || '').split(',').map((v) => v.trim()).filter(Boolean),
+        totalSeats: b.seat_rows * b.seat_columns,
+        routes,
+      };
+    }));
+  }));
+
+  app.post('/api/buses', wrap((req, res) => {
+    const { name, operator, busType, seatRows, seatColumns, seatLayout, routeId, routeIds, departureTime, departureTimes } = req.body || {};
+    const cleanName = String(name || '').trim();
+    const cleanOperator = String(operator || '').trim();
+    const cleanBusType = String(busType || '').trim();
+    const parsedRows = Number(seatRows);
+    const parsedColumns = Number(seatColumns);
+    const rawRouteIds = Array.isArray(routeIds) ? routeIds : Array.isArray(routeId) ? routeId : [routeId];
+    const selectedRouteIds = rawRouteIds
+      .flatMap((value) => String(value ?? '').split(',').map((part) => part.trim()))
+      .filter(Boolean)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    const rawDepartureTimes = Array.isArray(departureTimes) ? departureTimes : [departureTime || '08:00'];
+
+    if (!cleanName || !cleanOperator || !cleanBusType) {
+      throw new ApiError(400, 'INVALID_BUS', 'Name, operator, and bus type are required.');
+    }
+    if (!Number.isInteger(parsedRows) || parsedRows < 1 || parsedRows > 20) {
+      throw new ApiError(400, 'INVALID_BUS', 'Seat rows must be an integer between 1 and 20.');
+    }
+
+    const config = normalizeSeatConfig({
+      seat_rows: parsedRows,
+      seat_columns: Number.isInteger(parsedColumns) && parsedColumns > 0 ? parsedColumns : undefined,
+      seat_layout: seatLayout,
+    });
+
+    const normalizedSeatLayout = config.columnOrder.join(',');
+    const created = q.insertBus.run(cleanName, cleanOperator, cleanBusType, config.rows, config.columns, normalizedSeatLayout);
+    const busId = created.lastInsertRowid;
+
+    selectedRouteIds.forEach((selectedRouteId, index) => {
+      const route = db.prepare('SELECT id FROM routes WHERE id = ?').get(selectedRouteId);
+      if (!route) return;
+      const departure = String(rawDepartureTimes[index] ?? rawDepartureTimes[0] ?? '08:00');
+      q.insertSchedule.run(route.id, busId, departure);
+    });
+
+    const bus = q.busById.get(busId);
+    res.status(201).json({
+      id: bus.id,
+      name: bus.name,
+      operator: bus.operator,
+      busType: bus.bus_type,
+      seatRows: bus.seat_rows,
+      seatColumns: bus.seat_columns,
+      seatLayout: String(bus.seat_layout || '').split(',').map((v) => v.trim()).filter(Boolean),
+      totalSeats: bus.seat_rows * bus.seat_columns,
+      routeIds: selectedRouteIds,
+    });
+  }));
+
   app.get('/api/trips', wrap((req, res) => {
     const { from, to, date } = req.query;
     if (!from || !to) throw new ApiError(400, 'MISSING_ROUTE', 'Both "from" and "to" are required.');
@@ -144,7 +257,7 @@ function createApp({ db, now = () => new Date(), config = {} } = {}) {
     if (!t) throw new ApiError(404, 'TRIP_NOT_FOUND', 'Trip not found.');
     res.json({
       trip: tripView(t, date),
-      layout: seatLayout(t.seat_rows),
+      layout: seatLayout(t),
       booked: q.bookedSeats.all(t.id, date).map((r) => r.seat_no),
     });
   }));
@@ -171,7 +284,7 @@ function createApp({ db, now = () => new Date(), config = {} } = {}) {
     if (unique.length > cfg.maxSeatsPerBooking) {
       throw new ApiError(400, 'TOO_MANY_SEATS', `You can book up to ${cfg.maxSeatsPerBooking} seats at a time.`);
     }
-    const bad = unique.filter((s) => !isValidSeat(s, t.seat_rows));
+    const bad = unique.filter((s) => !isValidSeat(s, t));
     if (bad.length) throw new ApiError(400, 'INVALID_SEAT', `Invalid seat(s): ${bad.join(', ')}`);
 
     let booking;
